@@ -1,7 +1,5 @@
 /build
 /build_debug
 /build_release
-/lgraph
 /lib
-/tools
 .cache
