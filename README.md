@@ -13,6 +13,9 @@ docker run -d --rm \
   tugraph/tugraph-runtime-ubuntu18.04
 ```
 
+```sh
+lgraph_server -c /usr/local/etc/lgraph.json -d start 
+```
 
 导出依赖文件
 

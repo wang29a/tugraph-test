@@ -6,37 +6,18 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g -O0 -Wall -Wextra")
+set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3")
+
 # 添加 OpenMP 支持
 find_package(OpenMP REQUIRED)
 
 # 2. 配置可执行文件
-# add_executable(edge_test
-#     ~/tugraph/src/edge_test.cpp
-# )
 add_executable(edge_insert_test
     ~/tugraph/src/edge_insert_test.cpp
 )
 
 # 3. 设置包含路径
-# target_include_directories(edge_test PRIVATE
-#     ~/tugraph
-# )
-
-# 4. 设置链接选项
-# target_link_libraries(edge_test PRIVATE
-#     OpenMP::OpenMP_CXX  # OpenMP 支持
-#     lgraph
-#     lgraph_client_cpp_rpc
-#     pthread
-#     ssl
-#     crypto
-# )
-
-# 5. 设置库搜索路径
-# target_link_directories(edge_test PRIVATE
-#     ~/tugraph/lib
-# )
-
 target_include_directories(edge_insert_test PRIVATE
     ~/tugraph
 )
@@ -60,3 +41,13 @@ target_link_directories(edge_insert_test PRIVATE
 set(CMAKE_INSTALL_RPATH "~/tugraph/lib")  # 相对路径
 set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)   # 构建时使用安装路径
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE) # 使用链接路径
+
+# 添加自定义目标以便于调试
+add_custom_target(debug_build
+    COMMAND ${CMAKE_COMMAND} -DCMAKE_BUILD_TYPE=Debug ${CMAKE_SOURCE_DIR}
+    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target edge_insert_test
+    COMMENT "Building in debug mode..."
+)
+
+# 输出构建类型信息
+message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")

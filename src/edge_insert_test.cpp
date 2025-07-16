@@ -1,5 +1,6 @@
 // #include "bitmap.hpp"
 // #include "atomic.hpp"
+#include <cstddef>
 #include <cstdint>
 #include <iostream>
 #include <fstream>
@@ -31,15 +32,6 @@ int random_uniform_int(int min = 0, int max = 1) {
   return distribution(generator);
 }
 
-std::string gen_cypher_match_edge_string(int64_t src, int64_t dst) {
-    std::string ans;
-    ans += "MATCH (a:Vertex {id: "
-        + std::to_string(src)
-        + "})-[r:Edge]->(b:Vertex {id: "
-        + std::to_string(dst) + "})";
-    ans += "RETURN r";
-    return ans;
-}
 
 std::vector<std::pair<int64_t, int64_t>> edges;
 std::unordered_set<int64_t> nodes;
@@ -110,6 +102,39 @@ std::string gen_len_x_p(int64_t src, int64_t dst){ //长度为1 * 5 + 7 * 20 ，
     return ans;
 }
 
+std::string gen_cypher_match_edge_string(int64_t src, int64_t dst, size_t idx = 0) {
+    std::string ans;
+    ans += "MATCH (a:Vertex {id: "
+        + std::to_string(src)
+        + "})-[r:Edge]->(b:Vertex {id: "
+        + std::to_string(dst) + "})";
+    ans += "RETURN r.f"+std::to_string(idx);
+    return ans;
+}
+
+std::string gen_cypher_update_edge_string(int64_t src, int64_t dst) {
+    std::string ans;
+    ans += "MATCH (a:Vertex {id: "
+        + std::to_string(src)
+        + "})-[r:Edge]->(b:Vertex {id: "
+        + std::to_string(dst) + "})";
+    std::string property = gen_len_x_p(src, dst);
+    std::string property5;
+    for (int i = 0; i < 5; i ++) {
+        property5 += property;
+    }
+    ans += "SET r.f1 = \""+ property + "\","
+        += "r.f2 = \""+ property + "\","
+        += "r.f3 = \""+ property + "\","
+        += "r.f4 = \""+ property + "\","
+        += "r.f5 = \""+ property + "\","
+        += "r.f6 = \""+ property + "\","
+        += "r.f7 = \""+ property + "\","
+        += "r.f8 = \""+ property + "\",";
+    ans += "RETURN r";
+    return ans;
+}
+
 void run_app(){
       /******************************** Test APP ********************************/
     std::string alg_app;
@@ -128,7 +153,7 @@ void run_app(){
       for (int i = 0; i < repeat_time; i++) {
         std::cout << "  alg_app: " << alg_app << "\n";
         std::chrono::steady_clock::time_point t1 = std::chrono::steady_clock::now();
-        int64_t vertex_num = nodes.size();
+        // int64_t vertex_num = nodes.size();
         // double before = utils::get_memory_usage();
         if (alg_app == "sssp") {
           // for(int j = 0; j < graphdata.node_num; j += graphdata.node_num / 100){
@@ -182,7 +207,7 @@ int main() {
         
         // 访问配置参数
         std::string data_path = config["path"];
-        int test_case = config["test_case"];
+        // int test_case = config["test_case"];
 
         // 重定向标准输出到文件output.log
         freopen("output.log", "w", stdout); 
@@ -320,7 +345,7 @@ int main() {
                 bool success = thread_client.CallCypher(result, cypher);
                 // std::cout<<result<<"\n";
                 
-                // #pragma omp critical
+                #pragma omp critical
                 {
                     if (!success) {
                         std::cerr << "Failed to import edges batch [" << batch_start << "-" << batch_end << "]: " << result << "\n";
@@ -336,25 +361,6 @@ int main() {
                 // edges_json.shrink_to_fit();
             }
         }
-        
-        std::cout<<"begin to read!\n";
-        auto t1 = std::chrono::steady_clock::now();
-        #pragma omp parallel for num_threads(16)
-        for(int i = 0; i < edges.size() / 1000; i++){
-            static RpcClient thread_client{url, user, password};
-            int edge_id = random_uniform_int(0, edges.size() - 1);
-            int sub_property_id = random_uniform_int(0, 7);
-            auto e = edges[edge_id];
-            int64_t src = e.first;
-            int64_t dst = e.second;
-            std::string result;
-            std::string cypher = gen_cypher_match_edge_string(src, dst);
-            thread_client.CallCypher(result, cypher);
-        }
-        auto t2 = std::chrono::steady_clock::now();
-        auto time_span = std::chrono::duration_cast<std::chrono::duration<double>>(t2 - t1);         
-        std::cout<<"@read cost time:"<<time_span.count()<<"s\n";
-        std::cout<<"@read qps:"<< edges.size() / 1000.0 / time_span.count()<<"\n";
 
         std::string count_result;
         bool success = client.CallCypher(count_result, "MATCH (n:Vertex) RETURN count(n)");
@@ -378,21 +384,59 @@ int main() {
         
         std::cout << "\n=== Import Summary ===" << "\n";
         std::cout << "Total edges inserted: " << total_edges << "\n";
-        std::cout << "Total time: " << duration << " ms" << "\n";
-        std::cout << "QPS: " << static_cast<double>(total_edges) * 1000 / duration << " q/s" << "\n";
+        std::cout << "insert Total time: " << duration << " ms" << "\n";
+        std::cout << "insert QPS: " << static_cast<double>(total_edges) * 1000 / duration << " q/s" << "\n";
+
+
+        std::cout<<"begin to update!\n";
+        {
+            // const size_t edge_batch_size = 1000;
+            std::vector<int64_t> node_list(nodes.begin(), nodes.end());
+            auto t1 = std::chrono::steady_clock::now();
+            #pragma omp parallel num_threads(8)
+            {
+                RpcClient thread_client(url, user, password);
+                // #pragma omp for schedule(static, edge_batch_size)
+                #pragma omp for
+                for(size_t i = 0; i < edges.size() / 1000; i++){
+                    int edge_id = random_uniform_int(0, edges.size() - 1);
+                    auto e = edges[edge_id];
+                    int64_t src = e.first;
+                    int64_t dst = e.second;
+                    std::string property = gen_len_x_p(src, dst);
+
+                }
+            }
+            auto t2 = std::chrono::steady_clock::now();
+            auto time_span = std::chrono::duration_cast<std::chrono::duration<double>>(t2 - t1);         
+            std::cout<<"@update cost time:"<<time_span.count()<<"s\n";
+            std::cout<<"@update qps:"<<edges.size() / 1000.0 / time_span.count()<<"\n";
+        }
         
-        // edges.clear();
-        
-        // if (1) {
-        //     // int64_t source = edges[0].first; // 使用第一条边的起点作为源节点
-        //     cout<<"开始求单源最短路"<<"\n";
-        //     auto start_time1 = chrono::high_resolution_clock::now();
-        //     run_sssp(client, 1);
-        //      auto duration1 = chrono::duration_cast<chrono::milliseconds>(
-        //     chrono::high_resolution_clock::now() - start_time).count();
-        //     cout << "\n=== SSSP Summary ===" << "\n";
-        //     cout << "Total time: " << duration1 << " ms" << "\n";
-        // }
+        {
+            std::cout<<"begin to read!\n";
+            auto t1 = std::chrono::steady_clock::now();
+            #pragma omp parallel num_threads(8)
+            {
+
+                RpcClient thread_client(url, user, password);
+                #pragma omp for
+                for(size_t i = 0; i < edges.size() / 1000; i++){
+                    int edge_id = random_uniform_int(0, edges.size() - 1);
+                    int sub_property_id = random_uniform_int(0, 7);
+                    auto e = edges[edge_id];
+                    int64_t src = e.first;
+                    int64_t dst = e.second;
+                    std::string result;
+                    std::string cypher = gen_cypher_match_edge_string(src, dst, sub_property_id);
+                    thread_client.CallCypher(result, cypher);
+                }
+            }
+            auto t2 = std::chrono::steady_clock::now();
+            auto time_span = std::chrono::duration_cast<std::chrono::duration<double>>(t2 - t1);         
+            std::cout<<"@read cost time:"<<time_span.count()<<"s\n";
+            std::cout<<"@read qps:"<< edges.size() / 1000.0 / time_span.count()<<"\n";
+        }
         
         // 恢复标准输出到控制台（可选，若后续还需要在控制台输出信息）
         fclose(stdout);
