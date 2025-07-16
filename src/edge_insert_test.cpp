@@ -108,7 +108,7 @@ std::string gen_cypher_match_edge_string(int64_t src, int64_t dst, size_t idx = 
         + std::to_string(src)
         + "})-[r:Edge]->(b:Vertex {id: "
         + std::to_string(dst) + "})";
-    ans += "RETURN r.f"+std::to_string(idx);
+    ans += "RETURN r.f"+std::to_string(idx+1);
     return ans;
 }
 
@@ -395,7 +395,7 @@ int main() {
             auto t1 = std::chrono::steady_clock::now();
             #pragma omp parallel num_threads(8)
             {
-                RpcClient thread_client(url, user, password);
+                static RpcClient thread_client(url, user, password);
                 // #pragma omp for schedule(static, edge_batch_size)
                 #pragma omp for
                 for(size_t i = 0; i < edges.size() / 1000; i++){
@@ -419,7 +419,7 @@ int main() {
             #pragma omp parallel num_threads(8)
             {
 
-                RpcClient thread_client(url, user, password);
+                static RpcClient thread_client(url, user, password);
                 #pragma omp for
                 for(size_t i = 0; i < edges.size() / 1000; i++){
                     int edge_id = random_uniform_int(0, edges.size() - 1);

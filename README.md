@@ -33,3 +33,26 @@ docker cp tugraph-dev:/usr/local/lib64/liblgraph_client_cpp_rpc.so ./lib/
 1 插入->读取->图算法
 2 插入->更新->读取->图算法
 3 插入(测试test_p99)
+
+
+使用的cypher
+```cypher
+
+查询边
+
+更新边
+
+查询顶点所有出边
+MATCH (n)-[r]->(m)
+WHERE n.id = 123
+RETURN r, m.id as target_id
+
+MATCH (n:Vertex{id:0})-[r]->(m)
+RETURN r.f1 as rf
+
+k-hop
+MATCH (n:Vertex{id:0})-[r:Edge*2]->(m)
+RETURN m.id as dst
+
+
+```
