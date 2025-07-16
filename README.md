@@ -39,7 +39,14 @@ docker cp tugraph-dev:/usr/local/lib64/liblgraph_client_cpp_rpc.so ./lib/
 ```cypher
 
 查询边
+MATCH (a:Vertex {id:0})-[r:Edge]->(b:Vertex {id:??})
+RETURN r.f1 as rf
 
+MATCH (a:Vertex {id:0})-[r:Edge]->(b)
+RETURN r.f1 as rf
+
+MATCH (a:Vertex {id:0})-[r:Edge]->(b)
+RETURN r.f1 as rf b.id as dst
 更新边
 
 查询顶点所有出边
@@ -53,6 +60,4 @@ RETURN r.f1 as rf
 k-hop
 MATCH (n:Vertex{id:0})-[r:Edge*2]->(m)
 RETURN m.id as dst
-
-
 ```

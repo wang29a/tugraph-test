@@ -14,18 +14,28 @@
 using namespace lgraph;
 
 
-inline int run_scan(size_t vertex_num, std::vector<std::string> config, int threads_num, int sub_property_id = 0) {
-    std::function<void(RpcClient, int64_t)> F;
+inline int run_scan(size_t vertex_num, std::vector<std::string>& config, int threads_num, int sub_property_id = 0) {
+    std::function<void(RpcClient&, int64_t)> F;
     std::atomic<int64_t> sum = 0;
 
-    F = [&](RpcClient thread_client, int64_t src){
-        std::string cypher = gen_cypher_get_edge_property(src, sub_property_id);
+    F = [&](RpcClient& thread_client, int64_t src){
+        std::string cypher = gen_cypher_get_all_edge_property(src, sub_property_id);
         std::string result;
         bool success = thread_client.CallCypher(result, cypher);
+        if (!success) {
+            std::cerr<< config[1] << "\n";
+            std::cerr<< config[2] << "\n";
+            std::cerr<< config[0] << "\n";
+            std::cerr<< cypher << "\n";
+            std::cerr<< result << "\n";
+            assert(success);
+        }
         nlohmann::json json = nlohmann::json::parse(result);
-        auto data = json["data"];
+        if (json.empty()) {
+            return ;
+        }
 
-        for (const auto& item : data) {
+        for (const auto& item : json) {
             int64_t weight = 0;
             std::string f_value = item["rf"];  // 根据实际返回字段名调整
             auto [ptr, ec] = std::from_chars(f_value.data(), f_value.data()+f_value.size(), weight);
@@ -36,7 +46,7 @@ inline int run_scan(size_t vertex_num, std::vector<std::string> config, int thre
 
     #pragma omp parallel num_threads(threads_num)
     {
-        static RpcClient thread_client(config[0], config[1], config[2]);
+        RpcClient thread_client(config[0], config[1], config[2]);
         #pragma omp for
         for (size_t v_i = 0; v_i < vertex_num; v_i++) {
             F(thread_client, v_i);

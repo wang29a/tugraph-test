@@ -8,6 +8,11 @@
 #include <chrono>
 #include <string>
 #include <lgraph/lgraph_rpc_client.h>
+#include "src/gen_string.hpp"
+#include "src/khop.hpp"
+#include "src/khop_plus.hpp"
+#include "src/scan.hpp"
+#include "src/sssp.hpp"
 #include "tools/json.hpp"
 #include <omp.h>
 #include <random>
@@ -93,52 +98,11 @@ void ReadEdgesWithNodesTest(const std::string& file_path) {
     std::cout << "Read " << edges.size() << " edges and " << nodes.size() << " unique nodes." << "\n";
 }
 
-std::string gen_len_x_p(int64_t src, int64_t dst){ //长度为1 * 5 + 7 * 20 ，用|分隔 
-    int dig = (src + dst) % 100000;
-    std::string ans = std::to_string(dig);
-    while(ans.size() < 5){
-        ans = "0" + ans;
-    }
-    return ans;
-}
 
-std::string gen_cypher_match_edge_string(int64_t src, int64_t dst, size_t idx = 0) {
-    std::string ans;
-    ans += "MATCH (a:Vertex {id: "
-        + std::to_string(src)
-        + "})-[r:Edge]->(b:Vertex {id: "
-        + std::to_string(dst) + "})";
-    ans += "RETURN r.f"+std::to_string(idx+1);
-    return ans;
-}
-
-std::string gen_cypher_update_edge_string(int64_t src, int64_t dst) {
-    std::string ans;
-    ans += "MATCH (a:Vertex {id: "
-        + std::to_string(src)
-        + "})-[r:Edge]->(b:Vertex {id: "
-        + std::to_string(dst) + "})";
-    std::string property = gen_len_x_p(src, dst);
-    std::string property5;
-    for (int i = 0; i < 5; i ++) {
-        property5 += property;
-    }
-    ans += "SET r.f1 = \""+ property + "\","
-        += "r.f2 = \""+ property + "\","
-        += "r.f3 = \""+ property + "\","
-        += "r.f4 = \""+ property + "\","
-        += "r.f5 = \""+ property + "\","
-        += "r.f6 = \""+ property + "\","
-        += "r.f7 = \""+ property + "\","
-        += "r.f8 = \""+ property + "\",";
-    ans += "RETURN r";
-    return ans;
-}
-
-void run_app(){
-      /******************************** Test APP ********************************/
+void run_app(std::vector<std::string>& config){
+    /******************************** Test APP ********************************/
     std::string alg_app;
-    int repeat_time = 4;
+    int repeat_time = 1;
     std::vector<std::string> alg_app_set = {// 只要测试这四个
                                             "khop"
                                             ,"khop_plus"
@@ -153,19 +117,19 @@ void run_app(){
       for (int i = 0; i < repeat_time; i++) {
         std::cout << "  alg_app: " << alg_app << "\n";
         std::chrono::steady_clock::time_point t1 = std::chrono::steady_clock::now();
-        // int64_t vertex_num = nodes.size();
+        size_t vertex_num = nodes.size();
         // double before = utils::get_memory_usage();
         if (alg_app == "sssp") {
           // for(int j = 0; j < graphdata.node_num; j += graphdata.node_num / 100){
           //   run_sssp(txn, seq, 0, j);
           // }
-        // TODO  run_sssp(txn, seq, 0, FLAGS_source);
+            run_sssp(vertex_num, config, 8);
         } else if (alg_app == "scan") {
-        // TODO  run_scan(txn, seq);
+            run_scan(vertex_num, config, 8);
         } else if (alg_app == "khop") {
-        // TODO  run_khop(txn, FLAGS_khop, seq);
+            run_khop_recur(vertex_num, config, 8);
         } else if (alg_app == "khop_plus") {
-        // TODO  run_khop_plus(txn, FLAGS_khop, seq, 0, 50000);
+            run_khop_plus(vertex_num, config, 8, 0, 0,50000);
         } else {
           std::cout << "No this type, alg_app_type=" << alg_app << "\n";
         }
@@ -190,13 +154,290 @@ void run_app(){
     }
 }
 
-void insert_read_alg() {
+void insert_nodes(std::vector<std::string>& config, std::string data_path) {
+    RpcClient client(config[0], config[1], config[2]);
+
+    // 清除原有数据库
+    std::string str;
+    bool res = client.CallCypher(str, "CALL db.dropDB()");
+    std::cout << "Drop database result: " << (res ? "success" : "failed") << "\n";
+
+    // 创建顶点标签（添加RETURN语句以减少输出）
+    res = client.CallCypher(str, 
+        "CALL db.createVertexLabel('Vertex','id','id', int64, false) RETURN 'Label created'");
+    std::cout << "Vertex label creation result: " << (res ? "success" : "failed") << "\n";
+
+    // 创建边标签（添加RETURN语句以减少输出）
+    // res = client.CallCypher(str, 
+    //     "CALL db.createEdgeLabel('Edge', '[]', 'f1', STRING, true, 'f2', STRING, true, 'f3', STRING, true, 'f4', STRING, true) RETURN 'Edge label created'");
+    res = client.CallCypher(str, 
+        R"(CALL db.createEdgeLabel('Edge', '[]',
+                    'f1', STRING, false,
+                    'f2', STRING, false,
+                    'f3', STRING, false,
+                    'f4', STRING, false,
+                    'f5', STRING, false,
+                    'f6', STRING, false,
+                    'f7', STRING, false,
+                    'f8', STRING, false)
+                    RETURN 'Edge label created')");
+    std:: cout << "Edge label creation result: " << (res ? "success" : "failed") << "\n";
+    ReadEdgesWithNodesTest(data_path);
+    
+    // ================== 并行批量导入顶点 ==================
+    std::cout << "=== Starting to import nodes in parallel ===" << "\n";
+    std::vector<int64_t> node_list(nodes.begin(), nodes.end());
+    std::atomic<size_t> total_nodes(0);
+    const size_t node_batch_size = 100000;
+    const size_t node_report_interval = 100000;
+    
+    #pragma omp parallel num_threads(8)
+    {
+        RpcClient thread_client(config[0], config[1], config[2]);
+        
+        // 使用静态调度，每个线程处理固定范围的顶点
+        #pragma omp for schedule(static, node_batch_size)
+        for (size_t i = 0; i < node_list.size(); i++) {
+            size_t batch_start = (i / node_batch_size) * node_batch_size;
+            size_t batch_end = std::min(batch_start + node_batch_size, node_list.size());
+            
+            // 确保每个线程只处理自己的批次
+            if (i != batch_start) continue;
+            
+            std::string nodes_json = "[";
+            for (size_t j = batch_start; j < batch_end; j++) {
+                if (j > batch_start) nodes_json += ",";
+                nodes_json += "{id:" + std::to_string(node_list[j]) + "}";
+            }
+            nodes_json += "]";
+            
+            std::string cypher = "CALL db.upsertVertex('Vertex', " + nodes_json + ")";
+            std::string result;
+            bool success = thread_client.CallCypher(result, cypher);
+            
+            #pragma omp critical
+            {
+                if (!success) {
+                    std::cerr << "Failed to import nodes batch [" << batch_start << "-" << batch_end << "]: " << result << "\n";
+                } else {
+                    size_t batch_count = batch_end - batch_start;
+                    total_nodes += batch_count;
+                    if (batch_start % node_report_interval == 0) {
+                        std::cout << "Imported " << batch_start << "/" << node_list.size() << " nodes" << "\n";
+                    }
+                }
+            }
+        }
+    }
+    std::cout << "Successfully imported " << total_nodes << " nodes in parallel." << "\n";
+    // nodes.clear();
+    std::string count_result;
+    bool success = client.CallCypher(count_result, "MATCH (n:Vertex) RETURN count(n)");
+    if (success) {
+        auto node_count = json::parse(count_result)[0]["count(n)"].get<size_t>();
+        std::cout << "实际数据库中的顶点数量: " << node_count << "\n";
+    } else {
+        std::cerr << "查询顶点数量失败: " << count_result << "\n";
+    }
+
 }
 
-void insert_update_read_alg() {
+void insert_edges(std::vector<std::string>& config) {
+    RpcClient client(config[0], config[1], config[2]);
+    // ================== 并行批量导入边 ==================
+    std::cout << "=== Starting to import edges in parallel ===" << "\n";
+    auto start_time = std::chrono::high_resolution_clock::now();
+    const size_t edge_batch_size = 10000;
+    const size_t edge_report_interval = 100000;
+    std::atomic<size_t> total_edges(0);
+
+    #pragma omp parallel num_threads(8)
+    {
+        RpcClient thread_client(config[0], config[1], config[2]);
+        // 使用静态调度，每个线程处理固定范围的边
+        #pragma omp for schedule(static, edge_batch_size)
+        for (size_t i = 0; i < edges.size(); i++) {
+            size_t batch_start = (i / edge_batch_size) * edge_batch_size;
+            size_t batch_end = std::min(batch_start + edge_batch_size, edges.size());
+            // 确保每个线程只处理自己的批次
+            if (i != batch_start) continue;
+            std::string edges_json = "[";
+            for (size_t j = batch_start; j < batch_end; j++) {
+                if (j > batch_start) edges_json += ",";
+                const auto& [u, v] = edges[j];
+                std::string property = gen_len_x_p(u, v);
+                std::string property5;
+                for (int i = 0; i < 5; i ++) {
+                    property5 += property;
+                }
+                edges_json += "{start_id:" + std::to_string(u) + 
+                            ",end_id:" + std::to_string(v) +
+                            ",f1:'" + property + "'" +
+                            ",f2:'" + property5 + "'" +
+                            ",f3:'" + property5 + "'" +
+                            ",f4:'" + property5 + "'" +
+                            ",f5:'" + property5 + "'" +
+                            ",f6:'" + property5 + "'" +
+                            ",f7:'" + property5 + "'" +
+                            ",f8:'" + property5 + "'}";
+            }
+            edges_json += "]";
+            
+            std::string cypher = "CALL db.upsertEdge('Edge', "
+                            "{type:'Vertex',key:'start_id'}, "
+                            "{type:'Vertex',key:'end_id'}, " + 
+                            edges_json + ")";
+            
+            std::string result;
+            bool success = thread_client.CallCypher(result, cypher);
+            // std::cout<<result<<"\n";
+            
+            #pragma omp critical
+            {
+                if (!success) {
+                    std::cerr << "Failed to import edges batch [" << batch_start << "-" << batch_end << "]: " << result << "\n";
+                } else {
+                    size_t batch_count = batch_end - batch_start;
+                    total_edges += batch_count;
+                    if (batch_start % edge_report_interval == 0) {
+                        std::cout << "Imported " << batch_start << "/" << edges.size() << " edges" << "\n";
+                    }
+                }
+            }
+            // edges_json.clear();
+            // edges_json.shrink_to_fit();
+        }
+    }
+
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::high_resolution_clock::now() - start_time).count();
+
+    std::string count_result;
+    bool success = client.CallCypher(count_result, "MATCH ()-[e:Edge]->() RETURN count(e)");
+    if (success) {
+        auto edge_count = json::parse(count_result)[0]["count(e)"].get<size_t>();
+        std::cout << "实际数据库中的边数量: " << edge_count << "\n";
+    } else {
+        std::cerr << "查询边数量失败: " << count_result << "\n";
+    }
+
+    std::cout << "\n=== Import Summary ===" << "\n";
+    std::cout << "Total edges inserted: " << total_edges << "\n";
+    std::cout << "insert Total time: " << duration << " ms" << "\n";
+    std::cout << "insert QPS: " << static_cast<double>(total_edges) * 1000 / duration << " q/s" << "\n";
 }
 
-void insert_p99() {
+void update(std::vector<std::string>& config) {
+    std::cout<<"begin to update!\n";
+    // const size_t edge_batch_size = 1000;
+    std::vector<int64_t> node_list(nodes.begin(), nodes.end());
+    auto t1 = std::chrono::steady_clock::now();
+    #pragma omp parallel num_threads(8)
+    {
+        RpcClient thread_client(config[0], config[1], config[2]);
+        // #pragma omp for schedule(static, edge_batch_size)
+        #pragma omp for
+        for(size_t i = 0; i < edges.size() / 1000; i++){
+            int edge_id = random_uniform_int(0, edges.size() - 1);
+            auto e = edges[edge_id];
+            int64_t src = e.first;
+            int64_t dst = e.second;
+            std::string result;
+            std::string cypher = gen_cypher_update_edge(src, dst);
+            bool success = thread_client.CallCypher(result, cypher);
+        }
+    }
+    auto t2 = std::chrono::steady_clock::now();
+    auto time_span = std::chrono::duration_cast<std::chrono::duration<double>>(t2 - t1);         
+    std::cout<<"@update cost time:"<<time_span.count()<<"s\n";
+    std::cout<<"@update qps:"<<edges.size() / 1000.0 / time_span.count()<<"\n";
+}
+
+void read(std::vector<std::string>& config) {
+    std::cout<<"begin to read!\n";
+    auto t1 = std::chrono::steady_clock::now();
+    #pragma omp parallel num_threads(8)
+    {
+        RpcClient thread_client(config[0], config[1], config[2]);
+        #pragma omp for
+        for(size_t i = 0; i < edges.size() / 1000; i++){
+            int edge_id = random_uniform_int(0, edges.size() - 1);
+            int sub_property_id = random_uniform_int(0, 7);
+            auto e = edges[edge_id];
+            int64_t src = e.first;
+            int64_t dst = e.second;
+            std::string result;
+            std::string cypher = gen_cypher_get_edge_property(src, dst, sub_property_id);
+            bool success = thread_client.CallCypher(result, cypher);
+        }
+    }
+    auto t2 = std::chrono::steady_clock::now();
+    auto time_span = std::chrono::duration_cast<std::chrono::duration<double>>(t2 - t1);         
+    std::cout<<"@read cost time:"<<time_span.count()<<"s\n";
+    std::cout<<"@read qps:"<< edges.size() / 1000.0 / time_span.count()<<"\n";
+}
+
+std::vector<std::vector<uint64_t>> p99_store;
+void deal_p99(){
+  int tread_num = 16;
+  std::vector<uint64_t>total_store;
+  for(int i = 0; i < tread_num; i++){
+    total_store.insert(total_store.end(), p99_store[i].begin(), p99_store[i].end());
+  }
+  std::sort(total_store.begin(), total_store.end());
+  std::cout<<"p9  :"<<total_store[total_store.size() * 0.9]<<"\n";
+  std::cout<<"p99 :"<<total_store[total_store.size() * 0.99]<<"\n";
+  std::cout<<"p999:"<<total_store[total_store.size() * 0.999]<<"\n";
+}
+
+uint64_t getTimePoint() {
+    auto now = std::chrono::system_clock::now();
+    auto now_micros = std::chrono::time_point_cast<std::chrono::microseconds>(now);
+    auto value = now_micros.time_since_epoch();
+    return value.count();
+}
+
+// void p99() {
+//     std::cout<<"begin to test p99!\n"; //这段单独进行测试
+//     p99_store.resize(16);
+//     int gap = 10000;
+//     #pragma omp parallel for num_threads(8)
+//     for(int i = 0; i < edges.size(); i++){
+//         auto e = edges[i];
+//         int64_t src = e.first;
+//         int64_t dst = e.second;
+//         std::string property = gen_len_x_p(src, dst);
+//         if(i % gap == 0){
+//             auto t1 = getTimePoint();
+//             txn->put_edge(src, dst, property);
+//             auto t2 = getTimePoint();
+//             p99_store[omp_get_thread_num()].push_back(t2 - t1);
+//         } else {
+//             txn->put_edge(src, dst, property);
+//         }
+//     }
+//     deal_p99();
+// }
+
+
+void insert_read_alg(std::vector<std::string> &config, std::string data_path) {
+    insert_nodes(config, data_path);
+    insert_edges(config);
+    read(config);
+    run_app(config);
+}
+
+void insert_update_read_alg(std::vector<std::string> &config, std::string data_path) {
+    insert_nodes(config, data_path);
+    insert_edges(config);
+    update(config);
+    read(config);
+    run_app(config);
+}
+
+void insert_p99(std::vector<std::string> &config, std::string data_path) {
+    insert_nodes(config, data_path);
+    insert_edges(config);
 }
 
 int main() {
@@ -217,226 +458,12 @@ int main() {
         const std::string url = "127.0.0.1:9090";
         const std::string user = "admin";
         const std::string password = "@73@TuGraph@";
-        RpcClient client(url, user, password);
+        std::vector<std::string> client_config;
+        client_config.push_back(url);
+        client_config.push_back(user);
+        client_config.push_back(password);
 
-        // 清除原有数据库
-        std::string str;
-        bool res = client.CallCypher(str, "CALL db.dropDB()");
-        std::cout << "Drop database result: " << (res ? "success" : "failed") << "\n";
-
-        // 创建顶点标签（添加RETURN语句以减少输出）
-        res = client.CallCypher(str, 
-            "CALL db.createVertexLabel('Vertex','id','id', int64, false) RETURN 'Label created'");
-        std::cout << "Vertex label creation result: " << (res ? "success" : "failed") << "\n";
-
-        // 创建边标签（添加RETURN语句以减少输出）
-        // res = client.CallCypher(str, 
-        //     "CALL db.createEdgeLabel('Edge', '[]', 'f1', STRING, true, 'f2', STRING, true, 'f3', STRING, true, 'f4', STRING, true) RETURN 'Edge label created'");
-        res = client.CallCypher(str, 
-            R"(CALL db.createEdgeLabel('Edge', '[]',
-                        'f1', STRING, false,
-                        'f2', STRING, false,
-                        'f3', STRING, false,
-                        'f4', STRING, false,
-                        'f5', STRING, false,
-                        'f6', STRING, false,
-                        'f7', STRING, false,
-                        'f8', STRING, false)
-                        RETURN 'Edge label created')");
-       std:: cout << "Edge label creation result: " << (res ? "success" : "failed") << "\n";
-        ReadEdgesWithNodesTest(data_path);
-        
-        // ================== 并行批量导入顶点 ==================
-        std::cout << "=== Starting to import nodes in parallel ===" << "\n";
-        std::vector<int64_t> node_list(nodes.begin(), nodes.end());
-        std::atomic<size_t> total_nodes(0);
-        const size_t node_batch_size = 100000;
-        const size_t node_report_interval = 100000;
-        auto start_time = std::chrono::high_resolution_clock::now();
-        
-        #pragma omp parallel num_threads(8)
-        {
-            RpcClient thread_client(url, user, password);
-            
-            // 使用静态调度，每个线程处理固定范围的顶点
-            #pragma omp for schedule(static, node_batch_size)
-            for (size_t i = 0; i < node_list.size(); i++) {
-                size_t batch_start = (i / node_batch_size) * node_batch_size;
-                size_t batch_end = std::min(batch_start + node_batch_size, node_list.size());
-                
-                // 确保每个线程只处理自己的批次
-                if (i != batch_start) continue;
-                
-                std::string nodes_json = "[";
-                for (size_t j = batch_start; j < batch_end; j++) {
-                    if (j > batch_start) nodes_json += ",";
-                    nodes_json += "{id:" + std::to_string(node_list[j]) + "}";
-                }
-                nodes_json += "]";
-                
-                std::string cypher = "CALL db.upsertVertex('Vertex', " + nodes_json + ")";
-                std::string result;
-                bool success = thread_client.CallCypher(result, cypher);
-                
-                #pragma omp critical
-                {
-                    if (!success) {
-                        std::cerr << "Failed to import nodes batch [" << batch_start << "-" << batch_end << "]: " << result << "\n";
-                    } else {
-                        size_t batch_count = batch_end - batch_start;
-                        total_nodes += batch_count;
-                        if (batch_start % node_report_interval == 0) {
-                            std::cout << "Imported " << batch_start << "/" << node_list.size() << " nodes" << "\n";
-                        }
-                    }
-                }
-            }
-        }
-        std::cout << "Successfully imported " << total_nodes << " nodes in parallel." << "\n";
-        nodes.clear();
-
-        // ================== 并行批量导入边 ==================
-        std::cout << "=== Starting to import edges in parallel ===" << "\n";
-        const size_t edge_batch_size = 10000;
-        const size_t edge_report_interval = 100000;
-        std::atomic<size_t> total_edges(0);
-
-        #pragma omp parallel num_threads(8)
-        {
-            RpcClient thread_client(url, user, password);
-            
-            // 使用静态调度，每个线程处理固定范围的边
-            #pragma omp for schedule(static, edge_batch_size)
-            for (size_t i = 0; i < edges.size(); i++) {
-                size_t batch_start = (i / edge_batch_size) * edge_batch_size;
-                size_t batch_end = std::min(batch_start + edge_batch_size, edges.size());
-                
-                // 确保每个线程只处理自己的批次
-                if (i != batch_start) continue;
-                
-                std::string edges_json = "[";
-                for (size_t j = batch_start; j < batch_end; j++) {
-                    if (j > batch_start) edges_json += ",";
-                    const auto& [u, v] = edges[j];
-                    std::string property = gen_len_x_p(u, v);
-                    std::string property5;
-                    for (int i = 0; i < 5; i ++) {
-                        property5 += property;
-                    }
-                    edges_json += "{start_id:" + std::to_string(u) + 
-                                ",end_id:" + std::to_string(v) +
-                                ",f1:'" + property + "'" +
-                                ",f2:'" + property5 + "'" +
-                                ",f3:'" + property5 + "'" +
-                                ",f4:'" + property5 + "'" +
-                                ",f5:'" + property5 + "'" +
-                                ",f6:'" + property5 + "'" +
-                                ",f7:'" + property5 + "'" +
-                                ",f8:'" + property5 + "'}";
-                }
-                edges_json += "]";
-                
-                std::string cypher = "CALL db.upsertEdge('Edge', "
-                              "{type:'Vertex',key:'start_id'}, "
-                              "{type:'Vertex',key:'end_id'}, " + 
-                              edges_json + ")";
-                
-                std::string result;
-                bool success = thread_client.CallCypher(result, cypher);
-                // std::cout<<result<<"\n";
-                
-                #pragma omp critical
-                {
-                    if (!success) {
-                        std::cerr << "Failed to import edges batch [" << batch_start << "-" << batch_end << "]: " << result << "\n";
-                    } else {
-                        size_t batch_count = batch_end - batch_start;
-                        total_edges += batch_count;
-                        if (batch_start % edge_report_interval == 0) {
-                            std::cout << "Imported " << batch_start << "/" << edges.size() << " edges" << "\n";
-                        }
-                    }
-                }
-                // edges_json.clear();
-                // edges_json.shrink_to_fit();
-            }
-        }
-
-        std::string count_result;
-        bool success = client.CallCypher(count_result, "MATCH (n:Vertex) RETURN count(n)");
-        if (success) {
-            auto node_count = json::parse(count_result)[0]["count(n)"].get<size_t>();
-            std::cout << "实际数据库中的顶点数量: " << node_count << "\n";
-        } else {
-            std::cerr << "查询顶点数量失败: " << count_result << "\n";
-        }
-
-        success = client.CallCypher(count_result, "MATCH ()-[e:Edge]->() RETURN count(e)");
-        if (success) {
-            auto edge_count = json::parse(count_result)[0]["count(e)"].get<size_t>();
-            std::cout << "实际数据库中的边数量: " << edge_count << "\n";
-        } else {
-            std::cerr << "查询边数量失败: " << count_result << "\n";
-        }
-
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::high_resolution_clock::now() - start_time).count();
-        
-        std::cout << "\n=== Import Summary ===" << "\n";
-        std::cout << "Total edges inserted: " << total_edges << "\n";
-        std::cout << "insert Total time: " << duration << " ms" << "\n";
-        std::cout << "insert QPS: " << static_cast<double>(total_edges) * 1000 / duration << " q/s" << "\n";
-
-
-        std::cout<<"begin to update!\n";
-        {
-            // const size_t edge_batch_size = 1000;
-            std::vector<int64_t> node_list(nodes.begin(), nodes.end());
-            auto t1 = std::chrono::steady_clock::now();
-            #pragma omp parallel num_threads(8)
-            {
-                static RpcClient thread_client(url, user, password);
-                // #pragma omp for schedule(static, edge_batch_size)
-                #pragma omp for
-                for(size_t i = 0; i < edges.size() / 1000; i++){
-                    int edge_id = random_uniform_int(0, edges.size() - 1);
-                    auto e = edges[edge_id];
-                    int64_t src = e.first;
-                    int64_t dst = e.second;
-                    std::string property = gen_len_x_p(src, dst);
-
-                }
-            }
-            auto t2 = std::chrono::steady_clock::now();
-            auto time_span = std::chrono::duration_cast<std::chrono::duration<double>>(t2 - t1);         
-            std::cout<<"@update cost time:"<<time_span.count()<<"s\n";
-            std::cout<<"@update qps:"<<edges.size() / 1000.0 / time_span.count()<<"\n";
-        }
-        
-        {
-            std::cout<<"begin to read!\n";
-            auto t1 = std::chrono::steady_clock::now();
-            #pragma omp parallel num_threads(8)
-            {
-
-                static RpcClient thread_client(url, user, password);
-                #pragma omp for
-                for(size_t i = 0; i < edges.size() / 1000; i++){
-                    int edge_id = random_uniform_int(0, edges.size() - 1);
-                    int sub_property_id = random_uniform_int(0, 7);
-                    auto e = edges[edge_id];
-                    int64_t src = e.first;
-                    int64_t dst = e.second;
-                    std::string result;
-                    std::string cypher = gen_cypher_match_edge_string(src, dst, sub_property_id);
-                    thread_client.CallCypher(result, cypher);
-                }
-            }
-            auto t2 = std::chrono::steady_clock::now();
-            auto time_span = std::chrono::duration_cast<std::chrono::duration<double>>(t2 - t1);         
-            std::cout<<"@read cost time:"<<time_span.count()<<"s\n";
-            std::cout<<"@read qps:"<< edges.size() / 1000.0 / time_span.count()<<"\n";
-        }
+        insert_read_alg(client_config, data_path);
         
         // 恢复标准输出到控制台（可选，若后续还需要在控制台输出信息）
         fclose(stdout);
