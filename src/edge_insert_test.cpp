@@ -1,5 +1,6 @@
 // #include "bitmap.hpp"
 // #include "atomic.hpp"
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
@@ -154,7 +155,7 @@ void run_app(std::vector<std::string>& config){
     }
 }
 
-void insert_nodes(std::vector<std::string>& config, std::string data_path) {
+void insert_nodes(std::vector<std::string>& config, std::string data_path, int therad_num) {
     RpcClient client(config[0], config[1], config[2]);
 
     // 清除原有数据库
@@ -191,7 +192,7 @@ void insert_nodes(std::vector<std::string>& config, std::string data_path) {
     const size_t node_batch_size = 100000;
     const size_t node_report_interval = 100000;
     
-    #pragma omp parallel num_threads(8)
+    #pragma omp parallel num_threads(therad_num)
     {
         RpcClient thread_client(config[0], config[1], config[2]);
         
@@ -239,10 +240,17 @@ void insert_nodes(std::vector<std::string>& config, std::string data_path) {
     } else {
         std::cerr << "查询顶点数量失败: " << count_result << "\n";
     }
+    // std::string result;
+    // success = client.CallCypher(result, "CREATE INDEX ON :Vertex(id);");
+    // if (success) {
+    //     std::cout << "create vertex id index " << result << "\n";
+    // } else {
+    //     std::cerr << "failed create id index " << result << "\n";
+    // }
 
 }
 
-void insert_edges(std::vector<std::string>& config) {
+void insert_edges(std::vector<std::string>& config, int therad_num) {
     RpcClient client(config[0], config[1], config[2]);
     // ================== 并行批量导入边 ==================
     std::cout << "=== Starting to import edges in parallel ===" << "\n";
@@ -250,8 +258,9 @@ void insert_edges(std::vector<std::string>& config) {
     const size_t edge_batch_size = 10000;
     const size_t edge_report_interval = 100000;
     std::atomic<size_t> total_edges(0);
+    // std::atomic<size_t> test_cnt(0);
 
-    #pragma omp parallel num_threads(8)
+    #pragma omp parallel num_threads(therad_num)
     {
         RpcClient thread_client(config[0], config[1], config[2]);
         // 使用静态调度，每个线程处理固定范围的边
@@ -261,6 +270,10 @@ void insert_edges(std::vector<std::string>& config) {
             size_t batch_end = std::min(batch_start + edge_batch_size, edges.size());
             // 确保每个线程只处理自己的批次
             if (i != batch_start) continue;
+            // if (i != batch_start) {
+            //     test_cnt.fetch_add(1);
+            //     continue;
+            // }
             std::string edges_json = "[";
             for (size_t j = batch_start; j < batch_end; j++) {
                 if (j > batch_start) edges_json += ",";
@@ -322,17 +335,18 @@ void insert_edges(std::vector<std::string>& config) {
     }
 
     std::cout << "\n=== Import Summary ===" << "\n";
+    // std::cout << "test_cnt" << test_cnt << "\n";
     std::cout << "Total edges inserted: " << total_edges << "\n";
     std::cout << "insert Total time: " << duration << " ms" << "\n";
     std::cout << "insert QPS: " << static_cast<double>(total_edges) * 1000 / duration << " q/s" << "\n";
 }
 
-void update(std::vector<std::string>& config) {
+void update(std::vector<std::string>& config, int therad_num) {
     std::cout<<"begin to update!\n";
     // const size_t edge_batch_size = 1000;
     std::vector<int64_t> node_list(nodes.begin(), nodes.end());
     auto t1 = std::chrono::steady_clock::now();
-    #pragma omp parallel num_threads(8)
+    #pragma omp parallel num_threads(therad_num)
     {
         RpcClient thread_client(config[0], config[1], config[2]);
         // #pragma omp for schedule(static, edge_batch_size)
@@ -353,10 +367,10 @@ void update(std::vector<std::string>& config) {
     std::cout<<"@update qps:"<<edges.size() / 1000.0 / time_span.count()<<"\n";
 }
 
-void read(std::vector<std::string>& config) {
+void read(std::vector<std::string>& config, int therad_num) {
     std::cout<<"begin to read!\n";
     auto t1 = std::chrono::steady_clock::now();
-    #pragma omp parallel num_threads(8)
+    #pragma omp parallel num_threads(therad_num)
     {
         RpcClient thread_client(config[0], config[1], config[2]);
         #pragma omp for
@@ -397,47 +411,82 @@ uint64_t getTimePoint() {
     return value.count();
 }
 
-// void p99() {
-//     std::cout<<"begin to test p99!\n"; //这段单独进行测试
-//     p99_store.resize(16);
-//     int gap = 10000;
-//     #pragma omp parallel for num_threads(8)
-//     for(int i = 0; i < edges.size(); i++){
-//         auto e = edges[i];
-//         int64_t src = e.first;
-//         int64_t dst = e.second;
-//         std::string property = gen_len_x_p(src, dst);
-//         if(i % gap == 0){
-//             auto t1 = getTimePoint();
-//             txn->put_edge(src, dst, property);
-//             auto t2 = getTimePoint();
-//             p99_store[omp_get_thread_num()].push_back(t2 - t1);
-//         } else {
-//             txn->put_edge(src, dst, property);
-//         }
-//     }
-//     deal_p99();
-// }
+void p99(std::vector<std::string> &config, int therad_num) {
+    std::cout<<"begin to test p99!\n"; //这段单独进行测试
+    p99_store.resize(16);
+    int gap = 10000;
+    const size_t edge_batch_size = 10000;
+    const size_t edge_report_interval = 100000;
+    #pragma omp parallel num_threads(therad_num)
+    {
+        RpcClient thread_client(config[0], config[1], config[2]);
+        #pragma omp for
+        for(int i = 0; i < edges.size(); i++){
+            auto e = edges[i];
+            int64_t src = e.first;
+            int64_t dst = e.second;
+            std::string property = gen_len_x_p(src, dst);
+            std::string property5;
+            for (int i = 0; i < 5; i ++) {
+                property5 += property;
+            }
+            std::string result;
+            std::string cypher = 
+                "MATCH (a:Vertex {id: " + std::to_string(src) + "}),"
+                "(b:Vertex {id: " + std::to_string(dst) + "})"
+                "CREATE (a)-[r:Edge {"
+                "f1: '"+ property +"',"
+                "f2: '"+ property5 +"',"
+                "f3: '"+ property5 +"',"
+                "f4: '"+ property5 +"',"
+                "f5: '"+ property5 +"',"
+                "f6: '"+ property5 +"',"
+                "f7: '"+ property5 +"',"
+                "f8: '"+ property5 +"'"
+                "}]->(b);"
+            ;
+            if(i % gap == 0){
+                auto t1 = getTimePoint();
+                bool success = thread_client.CallCypher(result, cypher);
+                if (!success) {
+                    std::cerr<< cypher <<"\n";
+                    std::cerr<< result <<"\n";
+                    assert(success);
+                }
+                auto t2 = getTimePoint();
+                p99_store[omp_get_thread_num()].push_back(t2 - t1);
+            } else {
+                bool success = thread_client.CallCypher(result, cypher);
+                if (!success) {
+                    std::cerr<< cypher <<"\n";
+                    std::cerr<< result <<"\n";
+                    assert(success);
+                }
+            }
+        }
+    }
+    deal_p99();
+}
 
 
-void insert_read_alg(std::vector<std::string> &config, std::string data_path) {
-    insert_nodes(config, data_path);
-    insert_edges(config);
-    read(config);
+void insert_read_alg(std::vector<std::string> &config, std::string data_path, int therad_num) {
+    insert_nodes(config, data_path, therad_num);
+    insert_edges(config, therad_num);
+    read(config, therad_num);
+    // run_app(config);
+}
+
+void insert_update_read_alg(std::vector<std::string> &config, std::string data_path, int therad_num) {
+    insert_nodes(config, data_path, therad_num);
+    insert_edges(config, therad_num);
+    update(config, therad_num);
+    read(config, therad_num);
     run_app(config);
 }
 
-void insert_update_read_alg(std::vector<std::string> &config, std::string data_path) {
-    insert_nodes(config, data_path);
-    insert_edges(config);
-    update(config);
-    read(config);
-    run_app(config);
-}
-
-void insert_p99(std::vector<std::string> &config, std::string data_path) {
-    insert_nodes(config, data_path);
-    insert_edges(config);
+void insert_p99(std::vector<std::string> &config, std::string data_path, int therad_num) {
+    insert_nodes(config, data_path, therad_num);
+    p99(config, therad_num);
 }
 
 int main() {
@@ -449,6 +498,7 @@ int main() {
         // 访问配置参数
         std::string data_path = config["path"];
         // int test_case = config["test_case"];
+        int thread_num = config["thread_num"];
 
         // 重定向标准输出到文件output.log
         freopen("output.log", "w", stdout); 
@@ -463,7 +513,8 @@ int main() {
         client_config.push_back(user);
         client_config.push_back(password);
 
-        insert_read_alg(client_config, data_path);
+        insert_read_alg(client_config, data_path, thread_num);
+        // insert_p99(client_config, data_path, thread_num);
         
         // 恢复标准输出到控制台（可选，若后续还需要在控制台输出信息）
         fclose(stdout);
