@@ -252,42 +252,44 @@ void insert_nodes(std::vector<std::string>& config, std::string data_path, int t
     std::vector<int64_t> node_list(nodes.begin(), nodes.end());
     std::atomic<size_t> total_nodes(0);
     const size_t node_batch_size = 100000;
-    const size_t node_report_interval = 100000;
+    const size_t node_report_interval = 10000;
     
     #pragma omp parallel num_threads(therad_num)
     {
         RpcClient thread_client(config[0], config[1], config[2]);
         
         // 使用静态调度，每个线程处理固定范围的顶点
-        #pragma omp for schedule(static, node_batch_size)
+        #pragma omp for
         for (size_t i = 0; i < node_list.size(); i++) {
-            size_t batch_start = (i / node_batch_size) * node_batch_size;
-            size_t batch_end = std::min(batch_start + node_batch_size, node_list.size());
+            // size_t batch_start = (i / node_batch_size) * node_batch_size;
+            // size_t batch_end = std::min(batch_start + node_batch_size, node_list.size());
             
             // 确保每个线程只处理自己的批次
-            if (i != batch_start) continue;
+            // if (i != batch_start) continue;
             
-            std::string nodes_json = "[";
-            for (size_t j = batch_start; j < batch_end; j++) {
-                if (j > batch_start) nodes_json += ",";
-                nodes_json += "{id:" + std::to_string(node_list[j]) + "}";
-            }
-            nodes_json += "]";
+            // std::string nodes_json = "[";
+            // for (size_t j = batch_start; j < batch_end; j++) {
+                // if (j > batch_start) nodes_json += ",";
+                // nodes_json += "{id:" + std::to_string(node_list[i]) + "}";
+            // }
+            // nodes_json += "]";
             
-            std::string cypher = "CALL db.upsertVertex('Vertex', " + nodes_json + ")";
+            // std::string cypher = "CALL db.upsertVertex('Vertex', " + nodes_json + ")";
+            std::string cypher = gen_cypher_add_node(i);
             std::string result;
             bool success = thread_client.CallCypher(result, cypher);
             
-            #pragma omp critical
+            // #pragma omp critical
             {
                 if (!success) {
-                    std::cerr << "Failed to import nodes batch [" << batch_start << "-" << batch_end << "]: " << result << "\n";
-                } else {
-                    size_t batch_count = batch_end - batch_start;
-                    total_nodes += batch_count;
-                    if (batch_start % node_report_interval == 0) {
-                        std::cout << "Imported " << batch_start << "/" << node_list.size() << " nodes" << "\n";
-                    }
+                    std::cerr << "Failed to import nodes batch [" << i << "]: " << result << "\n";
+                // } else {
+                //     size_t batch_count = batch_end - batch_start;
+                //     total_nodes += batch_count;
+                }
+                if (i % node_report_interval == 0) {
+                    std::cout << "Imported " << i << "/" << node_list.size() << " nodes" << "\n";
+                    std::cout.flush();
                 }
             }
         }
@@ -302,6 +304,7 @@ void insert_nodes(std::vector<std::string>& config, std::string data_path, int t
     } else {
         std::cerr << "查询顶点数量失败: " << count_result << "\n";
     }
+                    std::cout.flush();
     // std::string result;
     // success = client.CallCypher(result, "CREATE INDEX ON :Vertex(id);");
     // if (success) {
@@ -320,7 +323,7 @@ void insert_edges(std::vector<std::string>& config, int therad_num) {
     std::cout << "=== Starting to import edges in parallel ===" << "\n";
     auto start_time = std::chrono::high_resolution_clock::now();
     const size_t edge_batch_size = 10000;
-    const size_t edge_report_interval = 100000;
+    const size_t edge_report_interval = 10000;
     std::atomic<size_t> total_edges(0);
     // std::atomic<size_t> test_cnt(0);
 
@@ -328,59 +331,61 @@ void insert_edges(std::vector<std::string>& config, int therad_num) {
     {
         RpcClient thread_client(config[0], config[1], config[2]);
         // 使用静态调度，每个线程处理固定范围的边
-        #pragma omp for schedule(static, edge_batch_size)
+        #pragma omp for
         for (size_t i = 0; i < edges.size(); i++) {
-            size_t batch_start = (i / edge_batch_size) * edge_batch_size;
-            size_t batch_end = std::min(batch_start + edge_batch_size, edges.size());
+            // size_t batch_start = (i / edge_batch_size) * edge_batch_size;
+            // size_t batch_end = std::min(batch_start + edge_batch_size, edges.size());
             // 确保每个线程只处理自己的批次
-            if (i != batch_start) continue;
+            // if (i != batch_start) continue;
             // if (i != batch_start) {
             //     test_cnt.fetch_add(1);
             //     continue;
             // }
-            std::string edges_json = "[";
-            for (size_t j = batch_start; j < batch_end; j++) {
-                if (j > batch_start) edges_json += ",";
-                const auto& [u, v] = edges[j];
-                std::string property = gen_len_x_p(u, v);
-                std::string property4;
-                for (int i = 0; i < 4; i ++) {
-                    property4 += property;
-                }
-                edges_json += "{start_id:" + std::to_string(u) + 
-                            ",end_id:" + std::to_string(v) +
-                            ",f1:'" + property + "'" +
-                            ",f2:'" + property4 + "'" +
-                            ",f3:'" + property4 + "'" +
-                            ",f4:'" + property4 + "'" +
-                            ",f5:'" + property4 + "'" +
-                            ",f6:'" + property4 + "'" +
-                            ",f7:'" + property4 + "'" +
-                            ",f8:'" + property4 + "'}";
-            }
-            edges_json += "]";
+            // std::string edges_json = "[";
+            // for (size_t j = batch_start; j < batch_end; j++) {
+                // if (j > batch_start) edges_json += ",";
+                const auto& [u, v] = edges[i];
+            //     std::string property = gen_len_x_p(u, v);
+            //     std::string property4;
+            //     for (int i = 0; i < 4; i ++) {
+            //         property4 += property;
+            //     }
+            //     edges_json += "{start_id:" + std::to_string(u) + 
+            //                 ",end_id:" + std::to_string(v) +
+            //                 ",f1:'" + property + "'" +
+            //                 ",f2:'" + property4 + "'" +
+            //                 ",f3:'" + property4 + "'" +
+            //                 ",f4:'" + property4 + "'" +
+            //                 ",f5:'" + property4 + "'" +
+            //                 ",f6:'" + property4 + "'" +
+            //                 ",f7:'" + property4 + "'" +
+            //                 ",f8:'" + property4 + "'}";
+            // // }
+            // edges_json += "]";
             
-            std::string cypher = "CALL db.upsertEdge('Edge', "
-                            "{type:'Vertex',key:'start_id'}, "
-                            "{type:'Vertex',key:'end_id'}, " + 
-                            edges_json + ")";
+            // std::string cypher = "CALL db.upsertEdge('Edge', "
+            //                 "{type:'Vertex',key:'start_id'}, "
+            //                 "{type:'Vertex',key:'end_id'}, " + 
+            //                 edges_json + ")";
             
+            std::string cypher = gen_cypher_add_edge(u, v);
             std::string result;
-            thread_client.CallCypher(result, cypher);
-            // bool success = thread_client.CallCypher(result, cypher);
+            // thread_client.CallCypher(result, cypher);
+            bool success = thread_client.CallCypher(result, cypher);
             // std::cout<<result<<"\n";
             
             // #pragma omp critical
             // {
-            //     if (!success) {
-            //         std::cerr << "Failed to import edges batch [" << batch_start << "-" << batch_end << "]: " << result << "\n";
+                if (!success) {
+                    std::cerr << "Failed to import edges batch [" << i << "]: " << result << "\n";
             //     } else {
             //         size_t batch_count = batch_end - batch_start;
             //         total_edges += batch_count;
-            //         if (batch_start % edge_report_interval == 0) {
-            //             std::cout << "Imported " << batch_start << "/" << edges.size() << " edges" << "\n";
-            //         }
-            //     }
+                }
+                if (i % edge_report_interval == 0) {
+                    std::cout << "Imported " << i << "/" << edges.size() << " edges" << "\n";
+                    std::cout.flush();
+                }
             // }
             // edges_json.clear();
             // edges_json.shrink_to_fit();
@@ -488,10 +493,10 @@ void p99(std::vector<std::string> &config, int therad_num) {
         // #pragma omp for
         #pragma omp for schedule(static, edge_batch_size)
         for (size_t i = 0; i < edges.size(); i++) {
-            size_t batch_start = (i / edge_batch_size) * edge_batch_size;
-            size_t batch_end = std::min(batch_start + edge_batch_size, edges.size());
+            // size_t batch_start = (i / edge_batch_size) * edge_batch_size;
+            // size_t batch_end = std::min(batch_start + edge_batch_size, edges.size());
             // 确保每个线程只处理自己的批次
-            if (i != batch_start) continue;
+            // if (i != batch_start) continue;
             auto e = edges[i];
             int64_t src = e.first;
             int64_t dst = e.second;
@@ -515,46 +520,55 @@ void p99(std::vector<std::string> &config, int therad_num) {
                 "f8: '"+ property4 +"'"
                 "}]->(b);"
             ;
-            auto t1 = getTimePoint();
-            bool success = thread_client.CallCypher(result, cypher);
-            if (!success) {
-                std::cerr<< cypher <<"\n";
-                std::cerr<< result <<"\n";
-                assert(success);
-            }
-            auto t2 = getTimePoint();
-            p99_store[omp_get_thread_num()].push_back(t2 - t1);
-            std::string edges_json = "[";
-            for (size_t j = batch_start+1; j < batch_end; j++) {
-                if (j > batch_start+1) edges_json += ",";
-                const auto& [u, v] = edges[j];
-                std::string property = gen_len_x_p(u, v);
-                std::string property4;
-                for (int i = 0; i < 5; i ++) {
-                    property4 += property;
+            if (i%gap) {
+                auto t1 = getTimePoint();
+                bool success = thread_client.CallCypher(result, cypher);
+                if (!success) {
+                    std::cerr<< cypher <<"\n";
+                    std::cerr<< result <<"\n";
+                    assert(success);
                 }
-                edges_json += "{start_id:" + std::to_string(u) + 
-                            ",end_id:" + std::to_string(v) +
-                            ",f1:'" + property + "'" +
-                            ",f2:'" + property4 + "'" +
-                            ",f3:'" + property4 + "'" +
-                            ",f4:'" + property4 + "'" +
-                            ",f5:'" + property4 + "'" +
-                            ",f6:'" + property4 + "'" +
-                            ",f7:'" + property4 + "'" +
-                            ",f8:'" + property4 + "'}";
+                auto t2 = getTimePoint();
+                p99_store[omp_get_thread_num()].push_back(t2 - t1);
+            } else {
+                bool success = thread_client.CallCypher(result, cypher);
+                if (!success) {
+                    std::cerr<< cypher <<"\n";
+                    std::cerr<< result <<"\n";
+                    assert(success);
+                }
             }
-            edges_json += "]";
+            // std::string edges_json = "[";
+            // for (size_t j = batch_start+1; j < batch_end; j++) {
+            //     if (j > batch_start+1) edges_json += ",";
+            //     const auto& [u, v] = edges[j];
+            //     std::string property = gen_len_x_p(u, v);
+            //     std::string property4;
+            //     for (int i = 0; i < 5; i ++) {
+            //         property4 += property;
+            //     }
+            //     edges_json += "{start_id:" + std::to_string(u) + 
+            //                 ",end_id:" + std::to_string(v) +
+            //                 ",f1:'" + property + "'" +
+            //                 ",f2:'" + property4 + "'" +
+            //                 ",f3:'" + property4 + "'" +
+            //                 ",f4:'" + property4 + "'" +
+            //                 ",f5:'" + property4 + "'" +
+            //                 ",f6:'" + property4 + "'" +
+            //                 ",f7:'" + property4 + "'" +
+            //                 ",f8:'" + property4 + "'}";
+            // }
+            // edges_json += "]";
             
-            cypher = "CALL db.upsertEdge('Edge', "
-                            "{type:'Vertex',key:'start_id'}, "
-                            "{type:'Vertex',key:'end_id'}, " + 
-                            edges_json + ")";
+            // cypher = "CALL db.upsertEdge('Edge', "
+            //                 "{type:'Vertex',key:'start_id'}, "
+            //                 "{type:'Vertex',key:'end_id'}, " + 
+            //                 edges_json + ")";
             
-            success = thread_client.CallCypher(result, cypher);
-            if (!success) {
-                std::cerr << "Failed to import edges batch [" << batch_start << "-" << batch_end << "]: " << result << "\n";
-            }
+            // success = thread_client.CallCypher(result, cypher);
+            // if (!success) {
+            //     std::cerr << "Failed to import edges batch [" << batch_start << "-" << batch_end << "]: " << result << "\n";
+            // }
         }
     }
     deal_p99();
