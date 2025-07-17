@@ -1,5 +1,3 @@
-// #include "bitmap.hpp"
-// #include "atomic.hpp"
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -20,6 +18,7 @@
 #include <unordered_set>
 #include <sstream>
 #include <atomic>
+#include <sys/stat.h>
 
 using namespace lgraph;
 using json = nlohmann::json;
@@ -41,6 +40,7 @@ int random_uniform_int(int min = 0, int max = 1) {
 
 std::vector<std::pair<int64_t, int64_t>> edges;
 std::unordered_set<int64_t> nodes;
+size_t node_num, edge_num;
 
 // 辅助函数：拼接向量元素为字符串（用分隔符连接）
 template <typename InputIt>
@@ -77,6 +77,67 @@ void ReadEdgesWithNodes(const std::string& file_path) {
     std::cout << "Read " << edges.size() << " edges and " << nodes.size() << " unique nodes." << "\n";
 }
 
+// std::uintmax_t getFileSize(const std::string& filepath) {
+//     std::error_code ec;
+//     auto size = std::filesystem::file_size(filepath, ec);
+//     if (ec) {
+//         std::cerr << "Error: " << ec.message() << std::endl;
+//         return 0;
+//     }
+//     return size;
+// }
+
+off_t getFileSize(const std::string& filepath) {
+    struct stat st;
+    if (stat(filepath.c_str(), &st) == 0) {
+        return st.st_size;
+    }
+    return -1;
+}
+
+void LoadGraphDataBinaryFile(std::string input_filename = "") {
+    size_t file_size = getFileSize(input_filename);
+    std::ifstream file(input_filename, std::ios::binary);
+
+    edge_num = file_size / 2 / sizeof(int64_t);
+
+    if (!file) {
+        std::cout << "error opening source: " << input_filename << std::endl;
+        exit(-1);
+    }
+
+    const size_t vertex_pair_size = 2 * sizeof(int64_t);
+    const size_t buffer_size = (4096*1024 / vertex_pair_size) * vertex_pair_size; 
+    char* edge_buffer = new char[buffer_size];
+    int64_t offset = 0;
+    int64_t max_vid = 0;
+    int64_t u, v;
+    edges.reserve(edge_num);
+
+    while (offset < file_size) {
+        size_t read_size = std::min(buffer_size, file_size - offset);
+        file.read(edge_buffer, read_size);
+
+        for (size_t i = 0; i < read_size / vertex_pair_size; i++) {  // 从buffer读
+            u = *(int64_t*)(edge_buffer + i * vertex_pair_size);
+            v = *(int64_t*)(edge_buffer + (i * 2 + 1) * sizeof(int64_t));
+            nodes.insert(u);
+            nodes.insert(v);
+            edges.emplace_back(std::make_pair(u, v));
+            max_vid = std::max({max_vid, u, v});
+        }
+
+        offset += read_size;
+    }
+    file.close();
+    delete[] edge_buffer;
+
+    // build graph
+    node_num = max_vid + 1;
+    edge_num = edges.size();
+}
+
+
 void ReadEdgesWithNodesTest(const std::string& file_path) {
     std::ifstream file(file_path);
     if (!file.is_open()) {
@@ -100,7 +161,7 @@ void ReadEdgesWithNodesTest(const std::string& file_path) {
 }
 
 
-void run_app(std::vector<std::string>& config){
+void run_app(std::vector<std::string>& config, int thread_num){
     /******************************** Test APP ********************************/
     std::string alg_app;
     int repeat_time = 1;
@@ -124,13 +185,13 @@ void run_app(std::vector<std::string>& config){
           // for(int j = 0; j < graphdata.node_num; j += graphdata.node_num / 100){
           //   run_sssp(txn, seq, 0, j);
           // }
-            run_sssp(vertex_num, config, 8);
+            run_sssp(vertex_num, config, thread_num);
         } else if (alg_app == "scan") {
-            run_scan(vertex_num, config, 8);
+            run_scan(vertex_num, config, thread_num);
         } else if (alg_app == "khop") {
-            run_khop_recur(vertex_num, config, 8);
+            run_khop_recur(vertex_num, config, thread_num);
         } else if (alg_app == "khop_plus") {
-            run_khop_plus(vertex_num, config, 8, 0, 0,50000);
+            run_khop_plus(vertex_num, config, thread_num, 0, 0,50000);
         } else {
           std::cout << "No this type, alg_app_type=" << alg_app << "\n";
         }
@@ -183,7 +244,8 @@ void insert_nodes(std::vector<std::string>& config, std::string data_path, int t
                     'f8', STRING, false)
                     RETURN 'Edge label created')");
     std:: cout << "Edge label creation result: " << (res ? "success" : "failed") << "\n";
-    ReadEdgesWithNodesTest(data_path);
+    // ReadEdgesWithNodesTest(data_path);
+    LoadGraphDataBinaryFile(data_path);
     
     // ================== 并行批量导入顶点 ==================
     std::cout << "=== Starting to import nodes in parallel ===" << "\n";
@@ -281,20 +343,20 @@ void insert_edges(std::vector<std::string>& config, int therad_num) {
                 if (j > batch_start) edges_json += ",";
                 const auto& [u, v] = edges[j];
                 std::string property = gen_len_x_p(u, v);
-                std::string property5;
-                for (int i = 0; i < 5; i ++) {
-                    property5 += property;
+                std::string property4;
+                for (int i = 0; i < 4; i ++) {
+                    property4 += property;
                 }
                 edges_json += "{start_id:" + std::to_string(u) + 
                             ",end_id:" + std::to_string(v) +
                             ",f1:'" + property + "'" +
-                            ",f2:'" + property5 + "'" +
-                            ",f3:'" + property5 + "'" +
-                            ",f4:'" + property5 + "'" +
-                            ",f5:'" + property5 + "'" +
-                            ",f6:'" + property5 + "'" +
-                            ",f7:'" + property5 + "'" +
-                            ",f8:'" + property5 + "'}";
+                            ",f2:'" + property4 + "'" +
+                            ",f3:'" + property4 + "'" +
+                            ",f4:'" + property4 + "'" +
+                            ",f5:'" + property4 + "'" +
+                            ",f6:'" + property4 + "'" +
+                            ",f7:'" + property4 + "'" +
+                            ",f8:'" + property4 + "'}";
             }
             edges_json += "]";
             
@@ -434,9 +496,9 @@ void p99(std::vector<std::string> &config, int therad_num) {
             int64_t src = e.first;
             int64_t dst = e.second;
             std::string property = gen_len_x_p(src, dst);
-            std::string property5;
+            std::string property4;
             for (int i = 0; i < 5; i ++) {
-                property5 += property;
+                property4 += property;
             }
             std::string result;
             std::string cypher = 
@@ -444,13 +506,13 @@ void p99(std::vector<std::string> &config, int therad_num) {
                 "(b:Vertex {id: " + std::to_string(dst) + "})"
                 "CREATE (a)-[r:Edge {"
                 "f1: '"+ property +"',"
-                "f2: '"+ property5 +"',"
-                "f3: '"+ property5 +"',"
-                "f4: '"+ property5 +"',"
-                "f5: '"+ property5 +"',"
-                "f6: '"+ property5 +"',"
-                "f7: '"+ property5 +"',"
-                "f8: '"+ property5 +"'"
+                "f2: '"+ property4 +"',"
+                "f3: '"+ property4 +"',"
+                "f4: '"+ property4 +"',"
+                "f5: '"+ property4 +"',"
+                "f6: '"+ property4 +"',"
+                "f7: '"+ property4 +"',"
+                "f8: '"+ property4 +"'"
                 "}]->(b);"
             ;
             auto t1 = getTimePoint();
@@ -467,20 +529,20 @@ void p99(std::vector<std::string> &config, int therad_num) {
                 if (j > batch_start+1) edges_json += ",";
                 const auto& [u, v] = edges[j];
                 std::string property = gen_len_x_p(u, v);
-                std::string property5;
+                std::string property4;
                 for (int i = 0; i < 5; i ++) {
-                    property5 += property;
+                    property4 += property;
                 }
                 edges_json += "{start_id:" + std::to_string(u) + 
                             ",end_id:" + std::to_string(v) +
                             ",f1:'" + property + "'" +
-                            ",f2:'" + property5 + "'" +
-                            ",f3:'" + property5 + "'" +
-                            ",f4:'" + property5 + "'" +
-                            ",f5:'" + property5 + "'" +
-                            ",f6:'" + property5 + "'" +
-                            ",f7:'" + property5 + "'" +
-                            ",f8:'" + property5 + "'}";
+                            ",f2:'" + property4 + "'" +
+                            ",f3:'" + property4 + "'" +
+                            ",f4:'" + property4 + "'" +
+                            ",f5:'" + property4 + "'" +
+                            ",f6:'" + property4 + "'" +
+                            ",f7:'" + property4 + "'" +
+                            ",f8:'" + property4 + "'}";
             }
             edges_json += "]";
             
@@ -503,7 +565,7 @@ void insert_read_alg(std::vector<std::string> &config, std::string data_path, in
     insert_nodes(config, data_path, therad_num);
     insert_edges(config, therad_num);
     read(config, therad_num);
-    // run_app(config);
+    run_app(config, therad_num);
 }
 
 void insert_update_read_alg(std::vector<std::string> &config, std::string data_path, int therad_num) {
@@ -511,7 +573,7 @@ void insert_update_read_alg(std::vector<std::string> &config, std::string data_p
     insert_edges(config, therad_num);
     update(config, therad_num);
     read(config, therad_num);
-    run_app(config);
+    run_app(config, therad_num);
 }
 
 void insert_p99(std::vector<std::string> &config, std::string data_path, int therad_num) {
