@@ -252,6 +252,8 @@ void insert_nodes(std::vector<std::string>& config, std::string data_path, int t
 
 void insert_edges(std::vector<std::string>& config, int therad_num) {
     RpcClient client(config[0], config[1], config[2]);
+    std::mt19937 g(0);
+    std::shuffle(edges.begin(), edges.end(), g);
     // ================== 并行批量导入边 ==================
     std::cout << "=== Starting to import edges in parallel ===" << "\n";
     auto start_time = std::chrono::high_resolution_clock::now();
@@ -302,21 +304,22 @@ void insert_edges(std::vector<std::string>& config, int therad_num) {
                             edges_json + ")";
             
             std::string result;
-            bool success = thread_client.CallCypher(result, cypher);
+            thread_client.CallCypher(result, cypher);
+            // bool success = thread_client.CallCypher(result, cypher);
             // std::cout<<result<<"\n";
             
-            #pragma omp critical
-            {
-                if (!success) {
-                    std::cerr << "Failed to import edges batch [" << batch_start << "-" << batch_end << "]: " << result << "\n";
-                } else {
-                    size_t batch_count = batch_end - batch_start;
-                    total_edges += batch_count;
-                    if (batch_start % edge_report_interval == 0) {
-                        std::cout << "Imported " << batch_start << "/" << edges.size() << " edges" << "\n";
-                    }
-                }
-            }
+            // #pragma omp critical
+            // {
+            //     if (!success) {
+            //         std::cerr << "Failed to import edges batch [" << batch_start << "-" << batch_end << "]: " << result << "\n";
+            //     } else {
+            //         size_t batch_count = batch_end - batch_start;
+            //         total_edges += batch_count;
+            //         if (batch_start % edge_report_interval == 0) {
+            //             std::cout << "Imported " << batch_start << "/" << edges.size() << " edges" << "\n";
+            //         }
+            //     }
+            // }
             // edges_json.clear();
             // edges_json.shrink_to_fit();
         }
@@ -420,8 +423,13 @@ void p99(std::vector<std::string> &config, int therad_num) {
     #pragma omp parallel num_threads(therad_num)
     {
         RpcClient thread_client(config[0], config[1], config[2]);
-        #pragma omp for
-        for(int i = 0; i < edges.size(); i++){
+        // #pragma omp for
+        #pragma omp for schedule(static, edge_batch_size)
+        for (size_t i = 0; i < edges.size(); i++) {
+            size_t batch_start = (i / edge_batch_size) * edge_batch_size;
+            size_t batch_end = std::min(batch_start + edge_batch_size, edges.size());
+            // 确保每个线程只处理自己的批次
+            if (i != batch_start) continue;
             auto e = edges[i];
             int64_t src = e.first;
             int64_t dst = e.second;
@@ -445,23 +453,45 @@ void p99(std::vector<std::string> &config, int therad_num) {
                 "f8: '"+ property5 +"'"
                 "}]->(b);"
             ;
-            if(i % gap == 0){
-                auto t1 = getTimePoint();
-                bool success = thread_client.CallCypher(result, cypher);
-                if (!success) {
-                    std::cerr<< cypher <<"\n";
-                    std::cerr<< result <<"\n";
-                    assert(success);
+            auto t1 = getTimePoint();
+            bool success = thread_client.CallCypher(result, cypher);
+            if (!success) {
+                std::cerr<< cypher <<"\n";
+                std::cerr<< result <<"\n";
+                assert(success);
+            }
+            auto t2 = getTimePoint();
+            p99_store[omp_get_thread_num()].push_back(t2 - t1);
+            std::string edges_json = "[";
+            for (size_t j = batch_start+1; j < batch_end; j++) {
+                if (j > batch_start+1) edges_json += ",";
+                const auto& [u, v] = edges[j];
+                std::string property = gen_len_x_p(u, v);
+                std::string property5;
+                for (int i = 0; i < 5; i ++) {
+                    property5 += property;
                 }
-                auto t2 = getTimePoint();
-                p99_store[omp_get_thread_num()].push_back(t2 - t1);
-            } else {
-                bool success = thread_client.CallCypher(result, cypher);
-                if (!success) {
-                    std::cerr<< cypher <<"\n";
-                    std::cerr<< result <<"\n";
-                    assert(success);
-                }
+                edges_json += "{start_id:" + std::to_string(u) + 
+                            ",end_id:" + std::to_string(v) +
+                            ",f1:'" + property + "'" +
+                            ",f2:'" + property5 + "'" +
+                            ",f3:'" + property5 + "'" +
+                            ",f4:'" + property5 + "'" +
+                            ",f5:'" + property5 + "'" +
+                            ",f6:'" + property5 + "'" +
+                            ",f7:'" + property5 + "'" +
+                            ",f8:'" + property5 + "'}";
+            }
+            edges_json += "]";
+            
+            cypher = "CALL db.upsertEdge('Edge', "
+                            "{type:'Vertex',key:'start_id'}, "
+                            "{type:'Vertex',key:'end_id'}, " + 
+                            edges_json + ")";
+            
+            success = thread_client.CallCypher(result, cypher);
+            if (!success) {
+                std::cerr << "Failed to import edges batch [" << batch_start << "-" << batch_end << "]: " << result << "\n";
             }
         }
     }
@@ -497,13 +527,11 @@ int main() {
         
         // 访问配置参数
         std::string data_path = config["path"];
-        // int test_case = config["test_case"];
+        int test_case = config["test_case"];
         int thread_num = config["thread_num"];
 
         // 重定向标准输出到文件output.log
         freopen("output.log", "w", stdout); 
-        // std::mt19937 g(0);
-        // std::shuffle(edges.begin(), edges.end(), g);
 
         const std::string url = "127.0.0.1:9090";
         const std::string user = "admin";
@@ -513,8 +541,17 @@ int main() {
         client_config.push_back(user);
         client_config.push_back(password);
 
-        insert_read_alg(client_config, data_path, thread_num);
-        // insert_p99(client_config, data_path, thread_num);
+        switch (test_case) {
+            case 1:
+                insert_read_alg(client_config, data_path, thread_num);
+            break;
+            case 2:
+                insert_update_read_alg(client_config, data_path, thread_num);
+            break;
+            case 3:
+                insert_p99(client_config, data_path, thread_num);
+            break;
+        }
         
         // 恢复标准输出到控制台（可选，若后续还需要在控制台输出信息）
         fclose(stdout);
